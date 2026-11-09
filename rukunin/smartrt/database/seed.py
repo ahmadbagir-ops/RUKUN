@@ -41,7 +41,7 @@ def seed(con):
             (f"320101010190000{n}", f"320101010100000{n}", nama, "L", "Bekasi", "1985-05-05",
              f"Jl. Melati No. {n}", f"08123456780{n}", "Wiraswasta")).lastrowid
     for k, v in {"nama_rt": "RT 03", "kelurahan": "Kelurahan Contoh", "kecamatan": "Kecamatan Contoh",
-                 "kota": "Kota Bekasi", "alamat_sekretariat": "Pos RT 03, Jl. Melati", "iuran_bulanan": "50000",
+                 "kota": "Kota Bekasi", "alamat_sekretariat": "Pos RT 03, Jl. Melati", "iuran_bulanan": "35000",
                  "info_pembayaran": "Transfer ke BCA 1234567890 a.n. Bendahara RT 03, lalu unggah bukti di sini.",
                  "nama_ttd": ""}.items():
         con.execute("INSERT INTO settings VALUES(?,?)", (k, v))
@@ -63,12 +63,12 @@ def seed(con):
     periode = today.strftime("%Y-%m")
     for key, w in wid.items():
         t = con.execute("INSERT INTO tagihan(warga_id,periode,jenis,nominal) VALUES(?,?,?,?)",
-                        (w, periode, "Iuran Bulanan", 50000)).lastrowid
+                        (w, periode, "Iuran Bulanan", 35000)).lastrowid
         if key == "Ahmad Fauzi":
             con.execute("UPDATE tagihan SET status='lunas',metode='Tunai',tgl_bayar=?,verified_by=? WHERE id=?",
                         (today.isoformat(), ids["bendahara"], t))
             con.execute("INSERT INTO transaksi(tipe,kategori,nominal,keterangan,tanggal,tagihan_id,created_by)"
-                        " VALUES('pemasukan','Iuran Warga',50000,?,?,?,?)",
+                        " VALUES('pemasukan','Iuran Warga',35000,?,?,?,?)",
                         (f"Iuran Bulanan {periode} - {key}", today.isoformat(), t, ids["bendahara"]))
     con.execute("INSERT INTO transaksi(tipe,kategori,nominal,keterangan,tanggal,created_by) VALUES(?,?,?,?,?,?)",
                 ("pemasukan", "Saldo Awal", 1500000, "Saldo kas awal", (today - timedelta(days=30)).isoformat(),

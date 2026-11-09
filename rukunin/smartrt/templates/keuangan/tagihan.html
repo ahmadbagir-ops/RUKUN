@@ -6,7 +6,7 @@
 <div class="dashboard-header">
   <div class="dash-welcome">
     <h1 class="dash-title">Kelola Tagihan Iuran Warga</h1>
-    <p class="dash-subtitle">Verifikasi pembayaran dan pantau iuran bulanan warga RT</p>
+    <p class="dash-subtitle">Iuran RT {{ iuran|int|rupiah }} per bulan terbit otomatis; tunggakan ditambahkan ke tagihan bulan berikutnya</p>
   </div>
 </div>
 
@@ -40,6 +40,7 @@
     
     <div style="background:rgba(96,108,56,0.12);padding:8px 16px;border-radius:var(--r-pill);">
       <span class="muted small">Terkumpul:</span> <b style="color:var(--c-deep)">{{ tot.lunas|rupiah }}</b> <span class="muted small">dari {{ tot.total|rupiah }}</span>
+      {% if tunggak_lalu %}<br><span class="muted small">Tunggakan bulan sebelumnya:</span> <b style="color:#a8321c">{{ tunggak_lalu|rupiah }}</b>{% endif %}
     </div>
   </div>
 
@@ -49,7 +50,7 @@
         <tr>
           <th>Nama Warga &amp; Alamat</th>
           <th>Jenis Tagihan</th>
-          <th class="r">Nominal</th>
+          <th class="r">Tagihan</th>
           <th>Status</th>
           <th>Bukti Bayar</th>
           {% if user.role == 'bendahara' %}<th class="r">Aksi Bendahara</th>{% endif %}
@@ -63,9 +64,17 @@
             <span class="muted small">{{ t.alamat }}</span>
           </td>
           <td>{{ t.jenis }}</td>
-          <td class="r"><b>{{ t.nominal|rupiah }}</b></td>
+          <td class="r">
+            {% if t.status in ('belum_bayar','ditolak') and t.tunggakan_lalu %}
+            <b>{{ (t.nominal + t.tunggakan_lalu)|rupiah }}</b><br>
+            <span class="small muted">{{ t.nominal|rupiah }} + tunggakan {{ t.tunggakan_lalu|rupiah }}</span>
+            {% else %}
+            <b>{{ t.nominal|rupiah }}</b>
+            {% endif %}
+          </td>
           <td>
             {{ badge('tagihan', t.status) }}
+            {% if t.status == 'menunggu_verifikasi' and t.grup_n > 1 %}<br><span class="small muted">Satu bukti untuk {{ t.grup_n }} tagihan</span>{% endif %}
             {% if t.catatan %}<br><span class="small muted">{{ t.catatan }}</span>{% endif %}
             {% if t.tgl_bayar %}<br><span class="small muted">{{ t.metode }} · {{ t.tgl_bayar|tgl }}</span>{% endif %}
           </td>
@@ -92,7 +101,7 @@
               </form>
             </div>
             {% elif t.status in ('belum_bayar','ditolak') %}
-            <form method="post" action="{{ url_for('tagihan.aksi', tid=t.id) }}" data-confirm="Catat pembayaran tunai?">
+            <form method="post" action="{{ url_for('tagihan.aksi', tid=t.id) }}" data-confirm="Catat pembayaran tunai{% if t.tunggakan_lalu %} (termasuk tunggakan sebelumnya, total {{ (t.nominal + t.tunggakan_lalu)|rupiah }}){% endif %}?">
               {{ csrf() }}
               <button name="aksi" value="tunai" class="btn out sm" style="padding:4px 12px;">Catat Tunai</button>
             </form>

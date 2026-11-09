@@ -2,12 +2,14 @@
 import csv
 import io
 import re
+import sqlite3
 from datetime import date
 
-from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
+from flask import Blueprint, Response, abort, flash, redirect, render_template, request, session, url_for
 
-from ..core import (STATUS, Invalid, choice, current_user, datestr, db, get_settings, log, monthly, my_warga_id,
-                    notify, num, q, roles_required, save_image, saldo, scalar, text, user_of_warga, users_by_role)
+from ..core import (STATUS, Invalid, bulan_label, choice, current_user, datestr, db, get_settings, log, monthly,
+                    my_warga_id, notify, num, q, roles_required, rupiah, save_image, saldo, scalar, text,
+                    user_of_warga, users_by_role)
 
 bp = Blueprint("keuangan", __name__, url_prefix="/keuangan")
 tagihan_bp = Blueprint("tagihan", __name__)
@@ -108,8 +110,99 @@ def export():
                     headers={"Content-Disposition": "attachment; filename=laporan-keuangan-rt.csv"})
 
 
+# ---------------------------------------------------------------- iuran bulanan & tunggakan
+NAMA_IURAN = "Iuran Bulanan"
+IURAN_DEFAULT = 35000                      # Rp35.000 per bulan (bisa diubah di Admin > Pengaturan)
+BELUM = ("belum_bayar", "ditolak")         # status yang dihitung sebagai tunggakan
+# Tunggakan sebelum tagihan t = semua tagihan warga yang sama, belum lunas, dan lebih lama dari t.
+TUNGGAKAN_LALU = ("(SELECT COALESCE(SUM(x.nominal),0) FROM tagihan x WHERE x.warga_id=t.warga_id "
+                  "AND x.status IN ('belum_bayar','ditolak') "
+                  "AND (x.periode<t.periode OR (x.periode=t.periode AND x.id<t.id)))")
+GRUP_N = ("(SELECT COUNT(*) FROM tagihan g WHERE g.warga_id=t.warga_id AND g.bukti=t.bukti "
+          "AND g.status='menunggu_verifikasi')")
+
+
+def iuran_nominal():
+    try:
+        return max(1000, int(get_settings().get("iuran_bulanan") or IURAN_DEFAULT))
+    except ValueError:
+        return IURAN_DEFAULT
+
+
+def _bulan_berikut(ym):
+    y, m = int(ym[:4]), int(ym[5:7])
+    return f"{y + m // 12}-{m % 12 + 1:02d}"
+
+
+def ensure_iuran_bulanan():
+    """Terbitkan iuran bulan berjalan (dan bulan yang terlewat) untuk semua warga aktif.
+
+    Aman dipanggil berulang: tagihan yang sudah ada tidak dibuat ulang (UNIQUE warga+periode+jenis).
+    Tunggakan tidak diubah di sini; ia otomatis ikut terhitung di tagihan bulan-bulan berikutnya.
+    """
+    sekarang = date.today().strftime("%Y-%m")
+    terakhir = scalar("SELECT MAX(periode) FROM tagihan WHERE jenis=? AND periode<=?", (NAMA_IURAN, sekarang))
+    mulai = _bulan_berikut(terakhir) if terakhir and terakhir < sekarang else sekarang
+    daftar = []
+    while mulai <= sekarang:               # format YYYY-MM: urutan teks = urutan waktu
+        daftar.append(mulai)
+        mulai = _bulan_berikut(mulai)
+    nominal, baru = iuran_nominal(), {}
+    for per in daftar[-12:]:               # paling banyak 12 bulan terakhir
+        calon = q("SELECT w.id, w.user_id FROM warga w WHERE w.aktif=1 AND substr(w.created_at,1,7)<=? "
+                  "AND NOT EXISTS (SELECT 1 FROM tagihan t WHERE t.warga_id=w.id AND t.periode=? AND t.jenis=?)",
+                  (per, per, NAMA_IURAN))
+        for w in calon:
+            cur = db().execute("INSERT OR IGNORE INTO tagihan(warga_id,periode,jenis,nominal) VALUES(?,?,?,?)",
+                               (w["id"], per, NAMA_IURAN, nominal))
+            if cur.rowcount:
+                baru[w["id"]] = w["user_id"]
+    if not baru:
+        return 0
+    db().commit()
+    for wid, uid in baru.items():
+        total = scalar("SELECT COALESCE(SUM(nominal),0) FROM tagihan WHERE warga_id=? AND status IN ('belum_bayar','ditolak')", (wid,))
+        notify([uid], "Tagihan iuran baru",
+               f"Iuran {bulan_label(sekarang)}: {rupiah(nominal)}. Total yang harus dibayar {rupiah(total)}"
+               + (" (termasuk tunggakan)." if total > nominal else "."), url_for("tagihan.saya"))
+    log("iuran_otomatis", f"{daftar[-1]} x{len(baru)}")
+    return len(baru)
+
+
+@tagihan_bp.before_app_request
+def _iuran_otomatis():
+    """Tanpa penjadwal: iuran bulan baru terbit otomatis saat ada yang membuka dashboard/halaman tagihan."""
+    if request.method == "GET" and session.get("uid") and request.endpoint in ("main.dashboard", "tagihan.index", "tagihan.saya"):
+        try:
+            ensure_iuran_bulanan()
+        except sqlite3.Error:
+            db().rollback()
+
+
+def _ringkas(rows):
+    rows = sorted(rows, key=lambda r: (r["periode"], r["id"]))
+    if len(rows) == 1:
+        return f"{rows[0]['jenis']} {rows[0]['periode']}"
+    return f"{len(rows)} tagihan ({bulan_label(rows[0]['periode'])} - {bulan_label(rows[-1]['periode'])})"
+
+
+def _belum_sampai(t):
+    """Tagihan t beserta seluruh tunggakan yang lebih lama (belum bayar / bukti ditolak) milik warga yang sama."""
+    return q("SELECT t.*, w.nama FROM tagihan t JOIN warga w ON w.id=t.warga_id WHERE t.warga_id=? "
+             "AND t.status IN ('belum_bayar','ditolak') AND (t.periode<? OR (t.periode=? AND t.id<=?)) "
+             "ORDER BY t.periode, t.id", (t["warga_id"], t["periode"], t["periode"], t["id"]))
+
+
+def _grup(t):
+    """Tagihan yang dibayar dengan satu bukti yang sama (satu kali kirim) dan masih menunggu verifikasi."""
+    if not t["bukti"]:
+        return [t]
+    return q("SELECT t.*, w.nama FROM tagihan t JOIN warga w ON w.id=t.warga_id WHERE t.warga_id=? AND t.bukti=? "
+             "AND t.status='menunggu_verifikasi' ORDER BY t.periode, t.id", (t["warga_id"], t["bukti"]))
+
+
 # ---------------------------------------------------------------- tagihan (bendahara/ketua)
-def _lunas(t, metode, oleh):
+def _lunas(t, metode, oleh, commit=True):
     """Tandai lunas + catat pemasukan kas, atomik dalam satu transaksi database."""
     d = db()
     d.execute("UPDATE tagihan SET status='lunas', metode=?, tgl_bayar=date('now','localtime'), verified_by=?, catatan=NULL WHERE id=?",
@@ -117,7 +210,8 @@ def _lunas(t, metode, oleh):
     d.execute("INSERT INTO transaksi(tipe,kategori,nominal,keterangan,tanggal,tagihan_id,created_by) "
               "VALUES('pemasukan','Iuran Warga',?,?,date('now','localtime'),?,?)",
               (t["nominal"], f"{t['jenis']} {t['periode']} - {t['nama']}", t["id"], oleh))
-    d.commit()
+    if commit:
+        d.commit()
 
 
 @tagihan_bp.route("/tagihan")
@@ -129,12 +223,15 @@ def index():
     if status in STATUS["tagihan"]:
         where.append("t.status=?")
         args.append(status)
-    rows = q("SELECT t.*, w.nama, w.alamat FROM tagihan t JOIN warga w ON w.id=t.warga_id "
+    rows = q(f"SELECT t.*, w.nama, w.alamat, {TUNGGAKAN_LALU} AS tunggakan_lalu, {GRUP_N} AS grup_n "
+             "FROM tagihan t JOIN warga w ON w.id=t.warga_id "
              f"WHERE {' AND '.join(where)} ORDER BY w.nama", args)
     tot = q("SELECT COALESCE(SUM(nominal),0) total, COALESCE(SUM(CASE WHEN status='lunas' THEN nominal END),0) lunas "
             "FROM tagihan WHERE periode=?", (periode,), one=True)
+    tunggak_lalu = scalar("SELECT COALESCE(SUM(nominal),0) FROM tagihan WHERE periode<? AND status IN ('belum_bayar','ditolak')",
+                          (periode,))
     return render_template("keuangan/tagihan.html", rows=rows, periode=periode, status=status, tot=tot,
-                           iuran=get_settings().get("iuran_bulanan", "50000"))
+                           tunggak_lalu=tunggak_lalu, iuran=get_settings().get("iuran_bulanan", str(IURAN_DEFAULT)))
 
 
 @tagihan_bp.post("/tagihan/generate")
@@ -164,14 +261,22 @@ def aksi(tid):
     act, u = request.form.get("aksi", ""), current_user()
     wuser, link = user_of_warga(t["warga_id"]), url_for("tagihan.saya")
     if act == "terima" and t["status"] == "menunggu_verifikasi":
-        _lunas(t, t["metode"] or "Transfer", u["id"])
-        notify([wuser], "Pembayaran diverifikasi", f"{t['jenis']} {t['periode']} lunas. Terima kasih!", link)
-    elif act == "tunai" and t["status"] in ("belum_bayar", "ditolak"):
-        _lunas(t, "Tunai", u["id"])
-        notify([wuser], "Pembayaran tunai dicatat", f"{t['jenis']} {t['periode']} lunas.", link)
+        grup = _grup(t)                    # satu bukti bisa mencakup tunggakan + iuran bulan ini
+        for g in grup:
+            _lunas(g, g["metode"] or "Transfer", u["id"], commit=False)
+        db().commit()
+        notify([wuser], "Pembayaran diverifikasi", f"{_ringkas(grup)} lunas. Terima kasih!", link)
+    elif act == "tunai" and t["status"] in BELUM:
+        sasaran = _belum_sampai(t)         # tunai melunasi tagihan ini beserta tunggakan sebelumnya
+        for s in sasaran:
+            _lunas(s, "Tunai", u["id"], commit=False)
+        db().commit()
+        notify([wuser], "Pembayaran tunai dicatat", f"{_ringkas(sasaran)} lunas.", link)
     elif act == "tolak" and t["status"] == "menunggu_verifikasi":
         alasan = text("catatan", "Alasan penolakan", 200)
-        db().execute("UPDATE tagihan SET status='ditolak', catatan=?, verified_by=? WHERE id=?", (alasan, u["id"], tid))
+        ids = [g["id"] for g in _grup(t)]
+        db().execute(f"UPDATE tagihan SET status='ditolak', catatan=?, verified_by=? WHERE id IN ({','.join('?' * len(ids))})",
+                     (alasan, u["id"], *ids))
         db().commit()
         notify([wuser], "Bukti pembayaran ditolak", alasan, link)
     else:
@@ -186,9 +291,13 @@ def aksi(tid):
 @roles_required("warga")
 def saya():
     wid = my_warga_id() or 0
-    rows = q("SELECT * FROM tagihan WHERE warga_id=? ORDER BY periode DESC, id DESC", (wid,))
-    tunggak = sum(r["nominal"] for r in rows if r["status"] in ("belum_bayar", "ditolak"))
-    return render_template("keuangan/tagihan_saya.html", rows=rows, tunggak=tunggak, metode=METODE_PILIHAN,
+    rows = q(f"SELECT t.*, {TUNGGAKAN_LALU} AS tunggakan_lalu FROM tagihan t WHERE t.warga_id=? "
+             "ORDER BY t.periode DESC, t.id DESC", (wid,))
+    belum = [r for r in rows if r["status"] in BELUM]
+    tunggak = sum(r["nominal"] for r in belum)
+    # Satu pembayaran untuk semuanya: membayar tagihan terbaru otomatis melunasi tunggakan sebelumnya.
+    return render_template("keuangan/tagihan_saya.html", rows=rows, belum=belum, tunggak=tunggak,
+                           bayar_id=belum[0]["id"] if belum else None, metode=METODE_PILIHAN,
                            info=get_settings().get("info_pembayaran", ""))
 
 
@@ -198,7 +307,7 @@ def bayar(tid):
     t = q("SELECT * FROM tagihan WHERE id=? AND warga_id=?", (tid, my_warga_id() or 0), one=True)
     if not t:
         abort(404)
-    if t["status"] not in ("belum_bayar", "ditolak"):
+    if t["status"] not in BELUM:
         raise Invalid("Tagihan ini tidak dapat dibayar lagi.")
     metode = choice("metode", "metode pembayaran", METODE)
     if metode == "QRIS":
@@ -206,9 +315,14 @@ def bayar(tid):
     elif metode == "Transfer Bank":
         metode = "Transfer Bank BCA"
     bukti = save_image("bukti", required=True)
-    db().execute("UPDATE tagihan SET status='menunggu_verifikasi', bukti=?, metode=?, catatan=NULL WHERE id=?", (bukti, metode, tid))
+    sasaran = _belum_sampai(t)             # tagihan ini + semua tunggakan yang lebih lama, satu bukti
+    ids = [s["id"] for s in sasaran]
+    db().execute(f"UPDATE tagihan SET status='menunggu_verifikasi', bukti=?, metode=?, catatan=NULL "
+                 f"WHERE id IN ({','.join('?' * len(ids))})", (bukti, metode, *ids))
     db().commit()
-    log("tagihan_bayar", f"#{tid}")
-    notify(users_by_role("bendahara"), "Bukti pembayaran masuk", f"{t['jenis']} {t['periode']}", url_for("tagihan.index", periode=t["periode"]))
+    log("tagihan_bayar", f"#{tid} x{len(ids)}")
+    notify(users_by_role("bendahara"), "Bukti pembayaran masuk",
+           f"{_ringkas(sasaran)} · {rupiah(sum(s['nominal'] for s in sasaran))}",
+           url_for("tagihan.index", periode=t["periode"]))
     flash("Bukti pembayaran terkirim. Menunggu verifikasi Bendahara.", "ok")
     return redirect(url_for("tagihan.saya"))

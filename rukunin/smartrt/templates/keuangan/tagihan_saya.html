@@ -15,12 +15,24 @@
     <div class="card-header-row" style="margin-bottom:10px;">
       <div class="card-title-group">
         <span class="card-icon-pill">{{ icon('receipt') }}</span>
-        <h2 style="margin:0;">Total Belum Dibayar</h2>
+        <h2 style="margin:0;">Total yang Harus Dibayar</h2>
       </div>
     </div>
     <div style="font-size:2rem;font-weight:800;color:var(--c-deep);margin:8px 0;">
       {{ tunggak|rupiah }}
     </div>
+    {% if belum|length > 1 %}
+    <div class="small" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;">
+      {% for t in belum|reverse %}
+      <div class="row sb"><span>{{ t.periode|bulan }} · {{ t.jenis }}</span><b>{{ t.nominal|rupiah }}</b></div>
+      {% endfor %}
+    </div>
+    <p class="muted small">Tunggakan bulan sebelumnya otomatis ditambahkan ke tagihan bulan berikutnya, jadi pembayaran mencakup semuanya.</p>
+    {% elif belum %}
+    <p class="muted small">Iuran RT dibayar setiap bulan. Jika belum dibayar, nominalnya akan ditambahkan ke tagihan bulan berikutnya.</p>
+    {% else %}
+    <p class="muted small">Tidak ada tagihan yang belum dibayar. Terima kasih!</p>
+    {% endif %}
     {% if info %}
     <p class="muted small">{{ info }}</p>
     {% endif %}
@@ -48,6 +60,26 @@
   </div>
 </div>
 
+{% if bayar_id %}
+<div class="card glass-card" style="margin-bottom:20px;">
+  <div class="card-header-row" style="margin-bottom:12px;">
+    <div class="card-title-group">
+      <span class="card-icon-pill">{{ icon('wallet') }}</span>
+      <h2 style="margin:0;">Bayar Tagihan</h2>
+    </div>
+  </div>
+  <form method="post" action="{{ url_for('tagihan.bayar', tid=bayar_id) }}" enctype="multipart/form-data" style="max-width:420px;display:flex;flex-direction:column;gap:8px;">
+    {{ csrf() }}
+    {{ sel('metode','Metode Pembayaran',metode) }}
+    <label class="f" style="margin:0;">
+      <span class="small muted">Unggah Bukti Transfer / Pembayaran:</span>
+      <input type="file" name="bukti" accept="image/jpeg,image/png,image/webp" required style="padding:4px 8px;font-size:0.8rem;">
+    </label>
+    <button class="btn btn-primary" style="margin-top:4px;">Kirim Bukti Pembayaran · {{ tunggak|rupiah }}</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="card glass-card">
   <div class="card-header-row" style="margin-bottom:16px;">
     <div class="card-title-group">
@@ -61,9 +93,11 @@
         <tr>
           <th>Periode</th>
           <th>Jenis</th>
-          <th class="r">Nominal</th>
+          <th class="r">Iuran Bulan Ini</th>
+          <th class="r">Tunggakan Sebelumnya</th>
+          <th class="r">Total Tagihan</th>
           <th>Status</th>
-          <th>Bayar / Konfirmasi</th>
+          <th>Konfirmasi</th>
         </tr>
       </thead>
       <tbody>
@@ -71,7 +105,10 @@
         <tr>
           <td><b>{{ t.periode|bulan }}</b></td>
           <td>{{ t.jenis }}</td>
-          <td class="r"><b>{{ t.nominal|rupiah }}</b></td>
+          <td class="r">{{ t.nominal|rupiah }}</td>
+          {% set belum_t = t.status in ('belum_bayar','ditolak') %}
+          <td class="r">{% if belum_t and t.tunggakan_lalu %}{{ t.tunggakan_lalu|rupiah }}{% else %}<span class="muted">-</span>{% endif %}</td>
+          <td class="r"><b>{{ (t.nominal + (t.tunggakan_lalu if belum_t else 0))|rupiah }}</b></td>
           <td>
             {{ badge('tagihan', t.status) }}
             {% if t.status == 'ditolak' and t.catatan %}
@@ -83,15 +120,7 @@
           </td>
           <td>
             {% if t.status in ('belum_bayar','ditolak') %}
-            <form method="post" action="{{ url_for('tagihan.bayar', tid=t.id) }}" enctype="multipart/form-data" style="min-width:220px;display:flex;flex-direction:column;gap:6px;">
-              {{ csrf() }}
-              {{ sel('metode','Metode Pembayaran',metode) }}
-              <label class="f" style="margin:0;">
-                <span class="small muted">Unggah Bukti Transfer / Pembayaran:</span>
-                <input type="file" name="bukti" accept="image/jpeg,image/png,image/webp" required style="padding:4px 8px;font-size:0.8rem;">
-              </label>
-              <button class="btn btn-primary sm" style="margin-top:4px;">Kirim Bukti Pembayaran</button>
-            </form>
+            <span class="small muted">Dibayar lewat form &ldquo;Bayar Tagihan&rdquo; di atas</span>
             {% elif t.status == 'menunggu_verifikasi' %}
             <span class="badge b-amber">Menunggu Verifikasi Bendahara</span>
             {% if t.bukti %}
@@ -104,7 +133,7 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="5" class="muted text-center" style="padding:24px 0;">Belum ada tagihan.</td>
+          <td colspan="7" class="muted text-center" style="padding:24px 0;">Belum ada tagihan.</td>
         </tr>
         {% endfor %}
       </tbody>
