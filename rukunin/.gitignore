@@ -1,0 +1,13 @@
+instance/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# secret & data lokal: JANGAN di-push
+*.db
+*.sqlite3
+*.key
+.env
+telegram_token.txt
+ntfy_topic.txt
