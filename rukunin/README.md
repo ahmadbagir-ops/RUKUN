@@ -8,7 +8,7 @@ tidak ada data statis pengganti. Tampilan Modern Glassmorphism + ilustrasi lingk
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python run.py                      # buka http://localhost:5000
+python run.py                      # buka http://localhost:5000 contoh
 ```
 Database `instance/smartrt.db` dibuat otomatis beserta data awal. Reset: hapus folder `instance/` lalu jalankan ulang.
 
@@ -16,7 +16,7 @@ Database `instance/smartrt.db` dibuat otomatis beserta data awal. Reset: hapus f
 dari perangkat lain di WiFi yang sama. Agar QR presensi memakai alamat itu secara tetap: `PUBLIC_BASE_URL=http://192.168.1.10:5000`.
 
 ## Tampilan (redesign RUKUNIN)
-Konsep **Modern Glassmorphism + Neighborhood Illustration Dashboard**. Backend, database, dan semua fitur lama tidak berubah; yang berubah hanya lapisan tampilan.
+Konsep **Modern Glassmorphism + Neighborhood Illustration Dashboard**. Backend, database, dan semua fitur lama tidak berubah; yang berubah hanya lapisan tampilan
 
 | Bagian | Isi |
 |---|---|
