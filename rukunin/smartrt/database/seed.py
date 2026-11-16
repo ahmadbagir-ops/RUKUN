@@ -11,7 +11,7 @@ AKUN = [  # username, password, nama, peran
     ("bendahara", "Rkn-Bdh!6Pc5", "Agus Salim", "bendahara"),
     ("humas", "Rkn-Hms!9Vd1", "Maya Pratiwi", "humas"),
     ("warga", "Rkn-Wrg!2Nb6", "Budi Santoso", "warga"),
-    ("warga2", "Rkn-Wrg!2Nb6", "Dewi Lestari", "warga"),
+    ("warga2", "Rkn-Wrg!2Nb6", "Tiwi Lestari", "warga"),
 ]
 WARGA_LAIN = ["Ahmad Fauzi", "Rina Marlina", "Joko Susilo", "Sri Wahyuni"]
 
